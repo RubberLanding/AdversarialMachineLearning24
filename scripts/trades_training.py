@@ -8,6 +8,7 @@ import json
 from torch.nn import CrossEntropyLoss, Conv2d
 from torchvision.models import resnet18
 from torch.optim import SGD, Adam
+import torch.optim.lr_scheduler as lr_scheduler
 
 from autoattack import AutoAttack
 
@@ -23,7 +24,6 @@ from src.train import train_epoch_adversarial, eval_epoch_adversarial, eval_epoc
 
 import argparse
 from datetime import datetime
-dummy_time = datetime(2025, 1, 1, 0, 0, 0)
 
 
 ###########################
@@ -49,7 +49,6 @@ transform = transforms.Compose([
     # transforms.Normalize(mean=[0.491, 0.482, 0.446], std=[0.247, 0.243, 0.261]),
     ])
 
-""" Load data """
 data_train = CIFAR10(root=data_dir, train=True, download=False, transform=transform)
 data_test = CIFAR10(root=data_dir, train=False, download=False, transform=transform)
 data_test, data_val = torch.utils.data.random_split(data_test, [0.1, 0.9])
@@ -77,8 +76,6 @@ weight_dir = current_file_dir.parents[1] / "weights"
 weight_file = weight_dir / "resnet18.pt"
 
 model_adv = resnet18()
-
-# CIFAR10: kernel_size 7 -> 3, stride 2 -> 1, padding 3->1
 model_adv.conv1 = Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
 model_adv.fc = torch.nn.Linear(model_adv.fc.in_features, num_classes)
 
@@ -104,8 +101,7 @@ epochs = args.epochs
 
 opt = Adam(model_adv.parameters(), lr=1e-3)
 # opt = SGD(model_adv.parameters(), lr=1e-1)
-# scheduler = CosineAnnealingLR(opt, T_max=100)
-# scheduler = CosineAnnealingWarmRestarts(opt, T_0=10, T_mult=2, eta_min=0)
+scheduler = lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
 
 trades = LossWrapper("TRADES")
 cross_entropy = LossWrapper("CE")
@@ -113,10 +109,9 @@ cross_entropy = LossWrapper("CE")
 
 ###########################
 # START TRAINING
-
-print(f"Begin adversarial training run: {run_dir.stem}\n")
+print(f"Begin training (TRADES): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"Run: {run_dir.stem}\n")
 print(*("TR      ", "TE      ", "ADV     ", "Epoch   "), sep="\t")
-current_time = datetime.now()
 
 for t in range(epochs):
     train_err, train_loss = train_epoch_adversarial(dataloader_train, model_adv, pgd_linf_trades, opt, loss_fn=trades, device=device)
@@ -134,9 +129,14 @@ for t in range(epochs):
     print(*("{:.6f}".format(train_err),
             "{:.6f}".format(test_err),
             "{:.6f}".format(adv_err),
-            f"{t+1}",), sep="\t")
+            f"{t+1}",), sep="\t", flush=True)
 
-print(f"Training time: {(dummy_time + (datetime.now() - current_time)).strftime("%H:%M:%S")}")
+    if t % 5 == 0:
+        with open(run_dir / "log.json", "w") as f:
+            json.dump(log, f)
+        torch.save(model_adv.state_dict(), run_dir / "model_trades.pt")
+
+print(f"End training: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 
 
 # ###########################
@@ -144,7 +144,7 @@ print(f"Training time: {(dummy_time + (datetime.now() - current_time)).strftime(
 X, y = next(iter(dataloader_test))
 X, y = X.to(device), y.to(device)
 
-current_time = datetime.now()
+print(f"Begin Autoattack: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 with torch.no_grad():
     model_adv.eval()
     predictions = model_adv(X).argmax(dim=1)
@@ -159,7 +159,7 @@ with torch.no_grad():
 autoattack_acc = (y == adv_predictions).float().mean().item() # AutoAttack reports this accuracy
 # autoattack_acc = (predictions == adv_predictions).float().mean().item()
 log["autoattack_acc"] = [autoattack_acc]
-print(f"Autoattack time: {(dummy_time + (datetime.now() - current_time)).strftime("%H:%M:%S")}")
+print(f"End Autoattack: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 
 
 ###########################
@@ -168,4 +168,4 @@ store = True # set this variable to True when you have runs that you want to sav
 if store:
   with open(run_dir / "log.json", "w") as f:
       json.dump(log, f)
-  torch.save(model_adv.state_dict(), run_dir / "model_adv.pt")
+  torch.save(model_adv.state_dict(), run_dir / "model_trades.pt")

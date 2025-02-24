@@ -9,6 +9,7 @@ from torch.nn import CrossEntropyLoss, Conv2d
 from torchvision.models import resnet18
 from torch.optim import SGD, Adam
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+import torch.optim.lr_scheduler as lr_scheduler
 
 from autoattack import AutoAttack
 
@@ -78,8 +79,6 @@ weight_dir = current_file_dir.parents[1] / "weights"
 weight_file = weight_dir / "resnet18.pt"
 
 model_adv = resnet18()
-
-# CIFAR10: kernel_size 7 -> 3, stride 2 -> 1, padding 3->1
 model_adv.conv1 = Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
 model_adv.fc = torch.nn.Linear(model_adv.fc.in_features, num_classes)
 
@@ -92,6 +91,7 @@ model_ema = model_ema.to(device)
 
 model_adv = NormalizeModel(model_adv, device)
 model_ema = NormalizeModel(model_ema, device)
+
 
 # ###########################
 # # SET LOGGING
@@ -109,8 +109,7 @@ epochs = args.epochs
 
 opt = Adam(model_adv.parameters(), lr=1e-3)
 # opt = SGD(model_adv.parameters(), lr=1e-1)
-# scheduler = CosineAnnealingLR(opt, T_max=100)
-# scheduler = CosineAnnealingWarmRestarts(opt, T_0=10, T_mult=2, eta_min=0)
+scheduler = lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
 
 trades = LossWrapper("TRADES")
 cross_entropy = LossWrapper("CE")
@@ -119,16 +118,16 @@ cross_entropy = LossWrapper("CE")
 ###########################
 # START TRAINING
 
-print(f"Begin adversarial training run: {run_dir.stem}\n")
+print(f"Begin training (EMA): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"Run: {run_dir.stem}\n")
 print(*("TR      ", "TE      ", "ADV     ", "Epoch   "), sep="\t")
-current_time = datetime.now()
 
 for t in range(epochs):
-    train_err, train_loss = train_epoch_adversarial(dataloader_train_subset, model_adv, pgd_linf, opt, loss_fn=cross_entropy)
-    model_ema.update_parameters(model_adv) # Update EMA
-    test_err, test_loss = eval_epoch(dataloader_val_subset, model_ema, loss_fn=cross_entropy) # Evaluate clean acc. on EMA
-    adv_err, adv_loss = eval_epoch_adversarial(dataloader_val_subset, model_ema, fgsm, loss_fn=cross_entropy) # Evaluate robust acc. on EMA
-    
+    train_err, train_loss = train_epoch_adversarial(dataloader_train, model_adv, pgd_linf, opt, loss_fn=cross_entropy, device=device)
+    model_ema.model.update_parameters(model_adv.model) # Update EMA
+    test_err, test_loss = eval_epoch(dataloader_val, model_ema, loss_fn=cross_entropy, device=device) # Evaluate clean acc. on EMA
+    adv_err, adv_loss = eval_epoch_adversarial(dataloader_val, model_ema, fgsm, loss_fn=cross_entropy, device=device) # Evaluate robust acc. on EMA
+
     # Update the losses and errors
     log["train_losses"] += [train_loss]
     log["test_losses"] += [test_loss]
@@ -140,9 +139,16 @@ for t in range(epochs):
     print(*("{:.6f}".format(train_err),
             "{:.6f}".format(test_err),
             "{:.6f}".format(adv_err),
-            f"{t+1}",), sep="\t")
+            f"{t+1}",), sep="\t", flush=True)
 
-print(f"Training time: {(dummy_time + (datetime.now() - current_time)).strftime("%H:%M:%S")}")
+    if t % 5 == 0:
+        with open(run_dir / "log.json", "w") as f:
+            json.dump(log, f)
+        torch.save(model_adv.state_dict(), run_dir / "model_adv.pt")
+        torch.save(model_ema.state_dict(), run_dir / "model_ema.pt")
+
+
+print(f"End training: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 
 
 # ###########################
@@ -150,22 +156,22 @@ print(f"Training time: {(dummy_time + (datetime.now() - current_time)).strftime(
 X, y = next(iter(dataloader_test))
 X, y = X.to(device), y.to(device)
 
-current_time = datetime.now()
+print(f"Begin Autoattack: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 with torch.no_grad():
-    model_adv.eval()
-    predictions = model_adv(X).argmax(dim=1)
+    model_ema.eval()
+    predictions = model_ema(X).argmax(dim=1)
 
-adversary = AutoAttack(model_adv, norm='Linf', eps=8/255, version='standard', device=device)
+adversary = AutoAttack(model_ema, norm='Linf', eps=8/255, version='standard', device=device)
 adv_samples = adversary.run_standard_evaluation(X, y, bs=batch_size)
 
 with torch.no_grad():
-    model_adv.eval()
-    adv_predictions = model_adv(adv_samples).argmax(dim=1)
+    model_ema.eval()
+    adv_predictions = model_ema(adv_samples).argmax(dim=1)
 
 autoattack_acc = (y == adv_predictions).float().mean().item() # AutoAttack reports this accuracy
 # autoattack_acc = (predictions == adv_predictions).float().mean().item()
 log["autoattack_acc"] = [autoattack_acc]
-print(f"Autoattack time: {(dummy_time + (datetime.now() - current_time)).strftime("%H:%M:%S")}")
+print(f"End Autoattack: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 
 
 ###########################
@@ -174,4 +180,5 @@ store = True # set this variable to True when you have runs that you want to sav
 if store:
   with open(run_dir / "log.json", "w") as f:
       json.dump(log, f)
+  torch.save(model_ema.state_dict(), run_dir / "model_ema.pt")
   torch.save(model_adv.state_dict(), run_dir / "model_adv.pt")
