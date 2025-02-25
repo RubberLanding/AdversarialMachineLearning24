@@ -76,11 +76,11 @@ X, y = next(iter(dataloader_test_subset))
 X, y = X.to(device), y.to(device)
 
 print(f"Begin certification base model: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-plot_certified_acc(model_base, X, y, num_samples_estimation=100,
+plot_certified_acc(model_base, X, y, num_samples_estimation=7500,
                        num_samples_selection=100, plot_file=run_dir / "model_base")
 print(f"End certification base model: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 print(f"Begin certification adversarial model: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-plot_certified_acc(model_adv, X, y, num_samples_estimation=100,
+plot_certified_acc(model_adv, X, y, num_samples_estimation=7500,
                        num_samples_selection=100, plot_file=run_dir / "model_adv")
 print(f"End certification adversarial model: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
