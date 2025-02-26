@@ -20,11 +20,11 @@ sys.path.insert(0, str(project_dir))
 from src.util import generate_run_name, NormalizeModel, set_rand_seed
 from src.losses import LossWrapper
 from src.attacks import fgsm, pgd_linf, pgd_linf_trades
-from src.train import train_epoch_adversarial, eval_epoch_adversarial, eval_epoch
+from src.train import train_epoch_awp, eval_epoch_adversarial, eval_epoch
+from src.weight_perturbation import AWP
 
 import argparse
 from datetime import datetime
-
 
 ###########################
 # PARSE INPUT ARGUMENTS
@@ -41,13 +41,13 @@ args = parser.parse_args()
 current_file_dir = Path(__file__).parent
 data_dir = current_file_dir.parents[1] / "datasets"
 
-batch_size = 1024 # batch size has to be < 2**16, should be <= 2**13 for T4
-debug = True
+batch_size = 1024
 
 transform = transforms.Compose([
     transforms.ToTensor(),
     # transforms.Normalize(mean=[0.491, 0.482, 0.446], std=[0.247, 0.243, 0.261]),
     ])
+
 set_rand_seed()
 data_train = CIFAR10(root=data_dir, train=True, download=False, transform=transform)
 data_test = CIFAR10(root=data_dir, train=False, download=False, transform=transform)
@@ -85,6 +85,10 @@ model_adv = model_adv.to(device)
 
 model_adv = NormalizeModel(model_adv, device)
 
+if torch.cuda.device_count() > 1:
+    print(f"Using {torch.cuda.device_count()} GPUs")
+    model = torch.nn.DataParallel(model_adv)
+
 # ###########################
 # # SET LOGGING
 results_dir = current_file_dir.parents[1] / "results"
@@ -106,15 +110,18 @@ scheduler = lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
 trades = LossWrapper("TRADES")
 cross_entropy = LossWrapper("CE")
 
+epsilon = 5e-3
+num_steps = 1
+model_awp = AWP(model_adv,opt)
 
 ###########################
 # START TRAINING
-print(f"Begin training (TRADES): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"Begin training (ADV): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"Run: {run_dir.stem}\n")
 print(*("TR      ", "TE      ", "ADV     ", "Epoch   "), sep="\t")
 
 for t in range(epochs):
-    train_err, train_loss = train_epoch_adversarial(dataloader_train, model_adv, pgd_linf_trades, opt, loss_fn=trades, device=device)
+    train_err, train_loss = train_epoch_awp(dataloader_train, model_adv, pgd_linf, opt, loss_fn=cross_entropy, awp=model_awp, device=device)
     test_err, test_loss = eval_epoch(dataloader_val, model_adv, loss_fn=cross_entropy, device=device)
     adv_err, adv_loss = eval_epoch_adversarial(dataloader_val, model_adv, fgsm, loss_fn=cross_entropy, device=device)
 
@@ -134,13 +141,13 @@ for t in range(epochs):
     if t % 5 == 0:
         with open(run_dir / "log.json", "w") as f:
             json.dump(log, f)
-        torch.save(model_adv.state_dict(), run_dir / "model_trades.pt")
+        torch.save(model_adv.state_dict(), run_dir / "model_awp.pt")
 
 print(f"End training: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 
 
-# ###########################
-# # APPLY AUTOATTACK
+###########################
+# APPLY AUTOATTACK
 X, y = next(iter(dataloader_test))
 X, y = X.to(device), y.to(device)
 
@@ -164,8 +171,6 @@ print(f"End Autoattack: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=T
 
 ###########################
 # STORE RESULTS
-store = True # set this variable to True when you have runs that you want to save
-if store:
-  with open(run_dir / "log.json", "w") as f:
-      json.dump(log, f)
-  torch.save(model_adv.state_dict(), run_dir / "model_trades.pt")
+with open(run_dir / "log.json", "w") as f:
+    json.dump(log, f)
+torch.save(model_adv.state_dict(), run_dir / "model_awp.pt")

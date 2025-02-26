@@ -17,7 +17,7 @@ import sys
 project_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_dir))
 
-from src.util import generate_run_name, NormalizeModel
+from src.util import generate_run_name, NormalizeModel, set_rand_seed
 from src.losses import LossWrapper
 from src.attacks import fgsm, pgd_linf, pgd_linf_trades
 from src.train import train_epoch_adversarial, eval_epoch_adversarial, eval_epoch
@@ -46,7 +46,7 @@ transform = transforms.Compose([
     transforms.ToTensor(),
     # transforms.Normalize(mean=[0.491, 0.482, 0.446], std=[0.247, 0.243, 0.261]),
     ])
-
+set_rand_seed()
 data_train = CIFAR10(root=data_dir, train=True, download=False, transform=transform)
 data_test = CIFAR10(root=data_dir, train=False, download=False, transform=transform)
 data_test, data_val = torch.utils.data.random_split(data_test, [0.1, 0.9])

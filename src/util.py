@@ -1,5 +1,6 @@
 import torch
 import random
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 
@@ -33,3 +34,9 @@ class NormalizeModel(torch.nn.Module):
 
     def forward(self, x):
         return self.model((x - self.mean) / self.std)
+
+def set_rand_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
